@@ -1,13 +1,10 @@
 import logging
 import json
-import random
 import os
 import datetime
 from datetime import date
 import aiohttp
 import discord
-import asyncio
-from discord import Webhook
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -43,24 +40,22 @@ bot = commands.Bot(
 @bot.event
 async def on_ready():
     print('CBot is logged in as {0.user}'.format(bot))
-    #channel = bot.get_channel(154048730771881984)
-    # for guild in bot.guilds:
-    #     system_channel = guild.system_channel
-    #     if system_channel is not None:
-    #         await print(f'{bot.user} IS ONLINE')
+    await bot.change_presence(activity=discord.Game(f"Danny Simulator {date.today().year+1}"))
 
+async def setup_hook():
     cogs_list = [
         'slash',
-        'events'
+        'events',
+        'birthdays',
+        'letterboxd'
     ]
 
     for cog in cogs_list:
         try:
             await bot.load_extension(cog)
             print(f'{cog} successfully loaded!')
-        finally:
-            print(f'{cog} loading failed')
-    await bot.change_presence(activity=discord.Game(f"Danny Simulator {date.today().year+1}"))
+        except Exception as e:
+            print(f'{cog} loading failed: {e}')
 
     twitch_headers = {'Authorization': f'Bearer {TWITCH_ACCESS_TOKEN}'}
     async with aiohttp.ClientSession(headers=twitch_headers) as session:
@@ -70,8 +65,6 @@ async def on_ready():
                     case 200:
                         validation_response = await response.json()
                         expires_in = validation_response['expires_in']
-                        html = await response.json()
-                        #print(f'{response.status} response!\n',f'{response.headers}\n',f'{html}\n',f'{session.headers}\n',expires_in)
                         if expires_in >= 604800:
                             print(f'~~~{datetime.timedelta(seconds=expires_in).days} days until Twitch token expires!~~~')
                         else:
@@ -88,35 +81,7 @@ async def on_ready():
             print(f'Connection Error! {str(e)}')
             return
 
-@bot.event
-async def on_message(message):
-
-    if message.author == bot.user:
-        return
-
-    # ranimg = random.choice(os.listdir('C:\\Users\\metak\\Pictures\\Rediscover\\'))
-    # rere_image = discord.File('C:\\Users\\metak\\Pictures\\Rediscover\\' + ranimg)
-    # colgate = discord.File('C:\\Users\\metak\\Pictures\\Rediscover\\colgate.png')
-    # #gregg = discord.File('C:\\Users\\metak\\Pictures\\gregg.png')
-    # gtfo = """ ```GTFO is a 4 player action/horror cooperative first-person shooter for hardcore gamers looking for a real challenge. 
-    # Players get to play as a team of prisoners, forced to explore and extract valuable artifacts from a vast underground complex that 
-    # has been overrun by terrifying creatures. Gather weapons, tools, and resources to help you survive - and work to unearth the answers 
-    # about your past and how to escape.``` """
-
-    # """ if 'gregg' in message.content:
-    #     await message.channel.send(file=gregg) """
-
-    # if 'staws' in message.content:
-    #     await message.channel.send(file=colgate)
-
-    # if message.content.startswith('!200'):
-    #     await message.channel.send(file=rere_image)
-
-    # if 'gtfo' in message.content:
-    #     await message.channel.send(gtfo)
-    
-    # await bot.process_commands(message)
-
+bot.setup_hook = setup_hook
 
 ##############################################################################
 ############################## COMMANDS SECTION ##############################
@@ -141,7 +106,6 @@ async def refresh_twitch(self: commands.Context) -> None:
         } 
     async with aiohttp.ClientSession(headers=twitch_headers) as session:
         async with session.post(f'https://id.twitch.tv/oauth2/token', params=params) as response:
-            expect = f'https://id.twitch.tv/oauth2/token/client_id={TWITCH_CLIENT_ID}&client_secret={TWITCH_CLIENT_SECRET}&grant_type=client_credentials'
             refresh_response = await response.json()
             
             if response.status == 400:
