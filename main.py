@@ -47,7 +47,8 @@ async def setup_hook():
         'slash',
         'events',
         'birthdays',
-        'letterboxd'
+        'letterboxd',
+        'starboard'
     ]
 
     for cog in cogs_list:
@@ -148,4 +149,4 @@ async def whois(command, *, member: discord.Member):
 #         if messages.author.id == user:
 #             await print(msg)
 
-bot.run(DISCORD_TOKEN, log_handler=handler, log_level=logging.DEBUG)
+bot.run(f"{DISCORD_TOKEN}", log_handler=handler, log_level=logging.DEBUG)
