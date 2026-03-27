@@ -29,7 +29,7 @@ intents.presences = True
 
 bot = commands.Bot(
     command_prefix='!',
-    description='CBOT 9000 COMMAND INDEX',
+    description='IMP BOT 9000 COMMAND INDEX',
     intents=intents
     )
 
@@ -48,7 +48,8 @@ async def setup_hook():
         'events',
         'birthdays',
         'letterboxd',
-        'starboard'
+        'starboard',
+        'lpc'
     ]
 
     for cog in cogs_list:
