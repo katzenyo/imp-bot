@@ -5,9 +5,10 @@ from discord import app_commands
 import os
 from pathlib import Path
 from typing import List
+from dotenv import load_dotenv
 
-# Placeholder path - update this to your actual albums directory
-ALBUMS_PATH = "./albums"
+# Refer to .env file for setting the ALBUMS_PATH variable
+ALBUMS_PATH = os.environ["ALBUMS_PATH"]
 
 class LPCPlayer(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
@@ -55,7 +56,7 @@ class LPCPlayer(commands.Cog):
     async def play(self, interaction: discord.Interaction, album: str):
         """Play all tracks from the selected album"""
         # Check if user is in a voice channel
-        if not interaction.user.voice:
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.voice:
             await interaction.response.send_message(
                 "You must be connected to a voice channel!",
                 ephemeral=True
@@ -73,6 +74,12 @@ class LPCPlayer(commands.Cog):
 
         # Connect to voice channel
         voice_channel = interaction.user.voice.channel
+        if not voice_channel:
+            await interaction.response.send_message(
+                "Could not connect to your voice channel.",
+                ephemeral=True
+            )
+            return
 
         if self.current_voice_client and self.current_voice_client.is_connected():
             await self.current_voice_client.move_to(voice_channel)

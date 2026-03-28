@@ -12,7 +12,7 @@ BIRTHDAY_EMBED_COLOR = discord.Color.from_rgb(255, 172, 51)
 class BirthdayCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.db: Optional[aiosqlite.Connection] = None
+        self.db: aiosqlite.Connection = None  # type: ignore[assignment]
 
     birthday_group = app_commands.Group(name='birthday', description='Birthday commands')
 
@@ -54,7 +54,7 @@ class BirthdayCog(commands.Cog):
 
         if row:
             channel = guild.get_channel(row['channel_id'])
-            if channel:
+            if isinstance(channel, discord.TextChannel):
                 return channel
             await self.db.execute(
                 'DELETE FROM birthday_channels WHERE guild_id = ?',

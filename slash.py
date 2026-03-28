@@ -96,7 +96,7 @@ class SlashCommands(commands.Cog):
                         await inter.response.send_message(embed=embed,view=WikiLinkButton())
                         return
                     case _:
-                        print("[ERROR] Wikipedia page returned a non-200 response")
+                        print(f"[ERROR] {wiki_response.url} returned a {wiki_response.status} response")
                         return
     
     # @wiki_group.command(name='search',description='Searchs Wikipedia',)
