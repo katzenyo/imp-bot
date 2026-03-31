@@ -47,6 +47,22 @@ class SlashCommands(commands.Cog):
         embed.set_image(url=inter.user.display_avatar)
         await inter.response.send_message(embed=embed)
 
+    @app_commands.command(name='playing', description='Shows what a user is playing')
+    @app_commands.describe(member="The user whose playing status to show")
+    async def playing(self, inter: discord.Interaction, member: discord.Member) -> None:
+        # Placeholder implementation - replace with actual playing status logic
+        user = member or inter.user
+        embed = discord.Embed(title=f'{user.display_name} is playing {user.activity.name if user.activity else "nothing"}')
+        await inter.response.send_message(embed=embed)
+    
+    @playing.autocomplete('member')
+    async def playing_autocomplete(self, inter: discord.Interaction, current: str):
+        members = inter.guild.members
+        return [
+            app_commands.Choice(name=member.display_name, value=str(member.id))
+            for member in members if current.lower() in member.display_name.lower()
+        ][:25]  # Limit to 25 choices
+
     # @app_commands.command(name='lpc',description='Plays a LPC track.')
     # async def lpc(self,inter: discord.Interaction) -> None:
     #     user = inter.message.author
