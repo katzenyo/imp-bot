@@ -50,12 +50,15 @@ class SlashCommands(commands.Cog):
     @app_commands.command(name='game', description='Name and shame a game a user is playing')
     @app_commands.describe(member="The user whose playing status to show")
     async def game(self, inter: discord.Interaction, member: discord.Member) -> None:
-        embed = discord.Embed(
-            title=f'{member.display_name} is playing {member.activity.name if member.activity.game else "nothing!"}',
-            color=discord.Colour.gold(),
-            url=member.avatar.url
-            )
-        await inter.response.send_message(embed=embed)
+        if member.activity is not None:
+            embed = discord.Embed(
+                title=f'{member.display_name} is playing {member.activity.name if member.activity.game else "nothing!"}',
+                color=discord.Colour.gold(),
+                url=member.avatar.url
+                )
+            await inter.response.send_message(embed=embed)
+        else:
+            await inter.response.send_message(f'> {member.display_name} is playing nothing! :sob:',ephemeral=True)
 
     # @app_commands.command(name='lpc',description='Plays a LPC track.')
     # async def lpc(self,inter: discord.Interaction) -> None:

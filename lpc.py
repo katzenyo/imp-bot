@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 # Refer to .env file for setting the ALBUMS_PATH variable
 ALBUMS_PATH = os.environ["ALBUMS_PATH"]
+FFMPEG_PATH = os.environ.get("FFMPEG_PATH", "ffmpeg")  # Default to 'ffmpeg' if not set
 
 class LPCPlayer(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
@@ -42,7 +43,7 @@ class LPCPlayer(commands.Cog):
             return
 
         next_track = self.queue.pop(0)
-        audio_source = discord.FFmpegPCMAudio(str(next_track))
+        audio_source = discord.FFmpegPCMAudio(str(next_track), executable=FFMPEG_PATH)
 
         voice_client.play(
             audio_source,
