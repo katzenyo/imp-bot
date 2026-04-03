@@ -91,8 +91,8 @@ class LPCPlayer(commands.Cog):
         self.queue.extend(audio_files)
 
         view = self.AudioControlView(self)
-        view.add_item(discord.ui.Button(label="⏹️ Stop", style=discord.ButtonStyle.danger, custom_id="lpc:stop"))
-        view.add_item(discord.ui.Button(label="⏭️ Skip", style=discord.ButtonStyle.primary, custom_id="lpc:skip"))
+        # view.add_item(discord.ui.Button(label="⏹️ Stop", style=discord.ButtonStyle.danger, custom_id="lpc:stop"))
+        # view.add_item(discord.ui.Button(label="⏭️ Skip", style=discord.ButtonStyle.primary, custom_id="lpc:skip"))
 
         await interaction.response.send_message(
             f"🎵 Playing album: **{album}** ({len(audio_files)} tracks)"
