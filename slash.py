@@ -52,9 +52,10 @@ class SlashCommands(commands.Cog):
     async def game(self, inter: discord.Interaction, member: discord.Member) -> None:
         if member.activity is not None:
             embed = discord.Embed(
-                title=f'{member.display_name} is playing {member.activity.name if member.activity.game else "nothing!"}',
+                title='Get A Load Of This Guy!',
                 color=discord.Colour.gold(),
-                url=member.avatar.url
+                url=member.avatar.url,
+                description=f'{member.display_name} is currently playing {member.activity.name if member.activity.type == discord.ActivityType.playing else "nothing!"}'
                 )
             await inter.response.send_message(embed=embed)
         else:
