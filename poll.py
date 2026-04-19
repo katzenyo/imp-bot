@@ -1,9 +1,6 @@
-import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands
-
-DB_PATH = "impbot.db"
 
 MOVIE_GENRES = [
     "Action", "Adventure", "Animation", "Biopic", "Comedy", "Crime", "Drama/Thriller",
@@ -100,98 +97,12 @@ class Poll(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         super().__init__()
         self.bot = bot
-        self.db: aiosqlite.Connection = None  # type: ignore[assignment]
 
-    poll_group = app_commands.Group(name='poll', description='Movie genre poll commands')
-
-    async def cog_load(self) -> None:
-        self.db = await aiosqlite.connect(DB_PATH)
-        self.db.row_factory = aiosqlite.Row
-        await self.db.execute('''
-            CREATE TABLE IF NOT EXISTS polls (
-                guild_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                question TEXT NOT NULL,
-                PRIMARY KEY (guild_id, name)
-            )
-        ''')
-        await self.db.commit()
-
-    async def cog_unload(self) -> None:
-        if self.db:
-            await self.db.close()
-
-    async def _name_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-        async with self.db.execute(
-            'SELECT name FROM polls WHERE guild_id = ? AND name LIKE ?',
-            (interaction.guild_id, f'%{current}%')
-        ) as cursor:
-            rows = await cursor.fetchall()
-        return [app_commands.Choice(name=row['name'], value=row['name']) for row in rows][:25]
-
-    @poll_group.command(name='create', description='Create a movie genre poll and save it for reuse')
-    @app_commands.describe(
-        name='A short name to save this poll under',
-        question='The poll question'
-    )
-    async def create(self, interaction: discord.Interaction, name: str, question: str) -> None:
-        await self.db.execute(
-            'INSERT OR REPLACE INTO polls (guild_id, name, question) VALUES (?, ?, ?)',
-            (interaction.guild_id, name, question)
-        )
-        await self.db.commit()
+    @app_commands.command(name='poll', description='Start a movie genre poll')
+    @app_commands.describe(question='The poll question')
+    async def poll(self, interaction: discord.Interaction, question: str) -> None:
         view = PollView(question)
         await interaction.response.send_message(embed=view.build_results_embed(), view=view)
-
-    @poll_group.command(name='run', description='Run a previously saved poll')
-    @app_commands.describe(name='The name of the saved poll')
-    @app_commands.autocomplete(name=_name_autocomplete)
-    async def run(self, interaction: discord.Interaction, name: str) -> None:
-        async with self.db.execute(
-            'SELECT question FROM polls WHERE guild_id = ? AND name = ?',
-            (interaction.guild_id, name)
-        ) as cursor:
-            row = await cursor.fetchone()
-
-        if row is None:
-            await interaction.response.send_message(f'No saved poll named "{name}".', ephemeral=True)
-            return
-
-        view = PollView(row['question'])
-        await interaction.response.send_message(embed=view.build_results_embed(), view=view)
-
-    @poll_group.command(name='list', description='List all saved polls for this server')
-    async def list(self, interaction: discord.Interaction) -> None:
-        async with self.db.execute(
-            'SELECT name, question FROM polls WHERE guild_id = ?',
-            (interaction.guild_id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-
-        if not rows:
-            await interaction.response.send_message('No saved polls for this server.', ephemeral=True)
-            return
-
-        embed = discord.Embed(title='Saved Polls')
-        for row in rows:
-            embed.add_field(name=row['name'], value=row['question'], inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @poll_group.command(name='delete', description='Delete a saved poll')
-    @app_commands.describe(name='The name of the poll to delete')
-    @app_commands.autocomplete(name=_name_autocomplete)
-    async def delete(self, interaction: discord.Interaction, name: str) -> None:
-        result = await self.db.execute(
-            'DELETE FROM polls WHERE guild_id = ? AND name = ?',
-            (interaction.guild_id, name)
-        )
-        await self.db.commit()
-
-        if result.rowcount == 0:
-            await interaction.response.send_message(f'No saved poll named "{name}".', ephemeral=True)
-            return
-
-        await interaction.response.send_message(f'Poll "{name}" deleted.', ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
