@@ -7,42 +7,85 @@ DB_PATH = "impbot.db"
 
 MOVIE_GENRES = [
     "Action", "Adventure", "Animation", "Biopic", "Comedy", "Crime", "Drama/Thriller",
-    "Documentary", "Drama", "Fantasy", "Horror", "Music/Musical", "Mystery",  "Romance",
+    "Documentary", "Drama", "Fantasy", "Horror", "Music/Musical", "Mystery", "Romance",
     "Seasonal", "Sci-Fi", "Shit", "Thriller", "Western"
 ]
 
+RANK_LABELS = ["1st choice", "2nd choice", "3rd choice"]
+RANK_POINTS = [3, 2, 1]
 
-class MoviePoll(discord.ui.Select):
-    def __init__(self, question: str):
-        self.question = question
-        self.voters: dict[int, list[str]] = {}
+
+class RankSelect(discord.ui.Select):
+    def __init__(self, rank: int):
         super().__init__(
-            placeholder="You get three votes. Use them wisely.",
+            placeholder=RANK_LABELS[rank],
             min_values=1,
-            max_values=3,
+            max_values=1,
             options=[discord.SelectOption(label=g, value=g) for g in MOVIE_GENRES],
-            custom_id='poll:select'
+            custom_id=f'poll:rank:{rank}',
+            row=rank
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        self.voters[interaction.user.id] = self.values
-        await interaction.response.edit_message(embed=self.build_results_embed())
+        await interaction.response.defer()
 
-    def build_results_embed(self) -> discord.Embed:
-        counts: dict[str, int] = {}
-        for choices in self.voters.values():
-            for choice in choices:
-                counts[choice] = counts.get(choice, 0) + 1
-        embed = discord.Embed(title=self.question)
-        for opt in self.options:
-            embed.add_field(name=opt.label, value=str(counts.get(opt.value, 0)), inline=True)
-        return embed
+
+class VoteView(discord.ui.View):
+    def __init__(self, poll_view: 'PollView', original_message: discord.Message):
+        super().__init__(timeout=180)
+        self.poll_view = poll_view
+        self.original_message = original_message
+        self.rank_selects = [RankSelect(i) for i in range(3)]
+        for s in self.rank_selects:
+            self.add_item(s)
+
+    @discord.ui.button(label='Submit Vote', style=discord.ButtonStyle.success, custom_id='poll:submit', row=3)
+    async def submit(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        choices = [s.values[0] if s.values else None for s in self.rank_selects]
+
+        if any(c is None for c in choices):
+            await interaction.response.send_message('Please make all three selections before submitting.', ephemeral=True)
+            return
+
+        if len(set(choices)) < 3:
+            await interaction.response.send_message('Each choice must be a different genre.', ephemeral=True)
+            return
+
+        self.poll_view.voters[interaction.user.id] = choices  # type: ignore[index]
+        await self.original_message.edit(embed=self.poll_view.build_results_embed())
+        await interaction.response.send_message('Your vote has been recorded!', ephemeral=True)
+
+
+class VoteButton(discord.ui.Button):
+    def __init__(self, poll_view: 'PollView'):
+        super().__init__(label='Vote', style=discord.ButtonStyle.primary, custom_id='poll:vote')
+        self.poll_view = poll_view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.message is None:
+            await interaction.response.send_message('Could not find the poll message.', ephemeral=True)
+            return
+        vote_view = VoteView(self.poll_view, interaction.message)
+        await interaction.response.send_message('Rank your top three genres:', view=vote_view, ephemeral=True)
 
 
 class PollView(discord.ui.View):
     def __init__(self, question: str):
         super().__init__(timeout=None)
-        self.add_item(MoviePoll(question))
+        self.question = question
+        self.voters: dict[int, list[str]] = {}
+        self.add_item(VoteButton(self))
+
+    def build_results_embed(self) -> discord.Embed:
+        counts: dict[str, int] = {}
+        for ranked_choices in self.voters.values():
+            for rank_idx, choice in enumerate(ranked_choices):
+                counts[choice] = counts.get(choice, 0) + RANK_POINTS[rank_idx]
+        sorted_genres = sorted(MOVIE_GENRES, key=lambda g: counts.get(g, 0), reverse=True)
+        embed = discord.Embed(title=self.question, description=f'{len(self.voters)} vote(s) cast')
+        for genre in sorted_genres:
+            embed.add_field(name=genre, value=f'{counts.get(genre, 0)} pts', inline=True)
+        return embed
 
 
 class Poll(commands.Cog):
@@ -90,8 +133,7 @@ class Poll(commands.Cog):
         )
         await self.db.commit()
         view = PollView(question)
-        poll_select: MoviePoll = view.children[0]  # type: ignore
-        await interaction.response.send_message(embed=poll_select.build_results_embed(), view=view)
+        await interaction.response.send_message(embed=view.build_results_embed(), view=view)
 
     @poll_group.command(name='run', description='Run a previously saved poll')
     @app_commands.describe(name='The name of the saved poll')
@@ -108,8 +150,7 @@ class Poll(commands.Cog):
             return
 
         view = PollView(row['question'])
-        poll_select: MoviePoll = view.children[0]  # type: ignore
-        await interaction.response.send_message(embed=poll_select.build_results_embed(), view=view)
+        await interaction.response.send_message(embed=view.build_results_embed(), view=view)
 
     @poll_group.command(name='list', description='List all saved polls for this server')
     async def list(self, interaction: discord.Interaction) -> None:
