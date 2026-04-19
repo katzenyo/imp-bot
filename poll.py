@@ -78,13 +78,21 @@ class PollView(discord.ui.View):
 
     def build_results_embed(self) -> discord.Embed:
         counts: dict[str, int] = {}
+        first_counts: dict[str, int] = {}
         for ranked_choices in self.voters.values():
+            first_counts[ranked_choices[0]] = first_counts.get(ranked_choices[0], 0) + 1
             for rank_idx, choice in enumerate(ranked_choices):
                 counts[choice] = counts.get(choice, 0) + RANK_POINTS[rank_idx]
-        sorted_genres = sorted(MOVIE_GENRES, key=lambda g: counts.get(g, 0), reverse=True)
+        sorted_genres = sorted(
+            MOVIE_GENRES,
+            key=lambda g: (counts.get(g, 0), first_counts.get(g, 0)),
+            reverse=True
+        )
         embed = discord.Embed(title=self.question, description=f'{len(self.voters)} vote(s) cast')
         for genre in sorted_genres:
-            embed.add_field(name=genre, value=f'{counts.get(genre, 0)} pts', inline=True)
+            pts = counts.get(genre, 0)
+            first = first_counts.get(genre, 0)
+            embed.add_field(name=genre, value=f'{pts} pts · {first} ★', inline=True)
         return embed
 
 
