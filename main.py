@@ -49,29 +49,30 @@ class ImpBot(commands.Bot):
             except Exception as e:
                 print(f'{cog} loading failed: {e}')
 
-        twitch_headers = {'Authorization': f'Bearer {TWITCH_ACCESS_TOKEN}'}
-        async with aiohttp.ClientSession(headers=twitch_headers) as session:
-            try:
-                async with session.get('https://id.twitch.tv/oauth2/validate') as response:
-                    match response.status:
-                        case 200:
-                            validation_response = await response.json()
-                            expires_in = validation_response['expires_in']
-                            if expires_in >= 604800:
-                                print(f'~~~{datetime.timedelta(seconds=expires_in).days} days until Twitch token expires!~~~')
-                            else:
-                                print(f'!!! RENEW YOUR TOKEN !!!\n{datetime.timedelta(seconds=expires_in).days} until Twitch token expires.\n!!! RENEW YOUR TOKEN !!!')
-                        case 401:
-                            print('Twitch access token invalid. Verify the token is valid or hasn\'t expired.')
-                            html = await response.json()
-                            print(f'{response.status} response!\n', f'{response.headers}\n', f'{html}\n', f'{session.headers}\n')
-                            return
-                        case _:
-                            print(response.status)
-                            return
-            except aiohttp.ClientConnectorError as e:
-                print(f'Connection Error! {str(e)}')
-                return
+        if TWITCH_ACCESS_TOKEN:
+            twitch_headers = {'Authorization': f'Bearer {TWITCH_ACCESS_TOKEN}'}
+            async with aiohttp.ClientSession(headers=twitch_headers) as session:
+                try:
+                    async with session.get('https://id.twitch.tv/oauth2/validate') as response:
+                        match response.status:
+                            case 200:
+                                validation_response = await response.json()
+                                expires_in = validation_response['expires_in']
+                                delta = datetime.timedelta(seconds=expires_in)
+                                if expires_in >= datetime.timedelta(weeks=1).total_seconds():
+                                    print(f'~~~{delta.days} days until Twitch token expires!~~~')
+                                else:
+                                    hours = int(delta.total_seconds() // 3600)
+                                    print(f'!!! RENEW YOUR TOKEN !!!\n{hours} hours until Twitch token expires.\n!!! RENEW YOUR TOKEN !!!')
+                            case 401:
+                                error_body = await response.json()
+                                print(f'Twitch access token invalid. Verify token validity or expiration.\n{response.status} response!\n{response.headers}\n{error_body}')
+                            case _:
+                                print(f'Unexpected Twitch validation response: {response.status}')
+                except aiohttp.ClientConnectorError as e:
+                    print(f'Twitch validation connection error: {e}')
+        else:
+            print('TWITCH_ACCESS_TOKEN not set, skipping validation.')
 
 
 bot = ImpBot(

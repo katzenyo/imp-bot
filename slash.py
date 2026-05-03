@@ -2,6 +2,7 @@ import os
 import discord
 import random
 import aiohttp
+import asyncio
 from discord import app_commands
 from discord.ext import commands
 from discord.app_commands import Group, command
@@ -11,15 +12,34 @@ from dotenv import load_dotenv
 load_dotenv()
 TWITCH_ACCESS_TOKEN=os.getenv("TWITCH_ACCESS_TOKEN")
 TWITCH_CLIENT_ID=os.getenv("TWITCH_CLIENT_ID")
+TWITCH_SECRET=os.getenv("TWITCH_CLIENT_SECRET")
 WIKI_ACCESS_TOKEN=os.getenv("WIKI_ACCESS_TOKEN")
 WIKI_CLIENT_ID=os.getenv("WIKI_CLIENT_ID")
+DEV_GUILD=discord.Object(154048730771881984) # Dev server guild ID
 
-twitch_headers = {'Authorization': f'Bearer {TWITCH_ACCESS_TOKEN}', 'Client-Id': f'{TWITCH_CLIENT_ID}'}
+twitch_headers = {'Authorization': f'Bearer {TWITCH_ACCESS_TOKEN}', 'Client-Id': f'{TWITCH_CLIENT_ID}'} 
+twitch_refresh_header = {'Content-Type': 'application/x-www-form-urlencoded'}
 wiki_headers = {'Authorization': f'Bearer {WIKI_ACCESS_TOKEN}', 'Client-Id': f'{WIKI_CLIENT_ID}'}
+
+async def is_owner(interaction: discord.Interaction) -> bool:
+    return await interaction.client.is_owner(interaction.user)  # type: ignore[arg-type]
+
 
 class SlashCommands(commands.Cog):
     def __init__(self,bot: commands.Bot) -> None:
         self.bot = bot
+
+    @app_commands.command(name='refresh-twitch-token', description='Refreshes the Twitch API token')
+    @app_commands.check(is_owner)
+    async def refresh_twitch_token(self, inter: discord.Interaction) -> None:
+        async with aiohttp.ClientSession(headers=twitch_refresh_header) as session:
+            params = {
+                'grant_type': 'refresh_token',
+                'refresh_token': f'{TWITCH_ACCESS_TOKEN}',
+                'client_id': f'{TWITCH_CLIENT_ID}',
+                'client_secret': f'{TWITCH_SECRET}'
+            }
+            pass
 
     @app_commands.command(name='roll', description='Rolls a d20')
     async def roll(self, inter: discord.Interaction) -> None:
@@ -60,11 +80,6 @@ class SlashCommands(commands.Cog):
             await inter.response.send_message(embed=embed)
         else:
             await inter.response.send_message(f'> {member.display_name} is playing nothing! :sob:',ephemeral=True)
-
-    # @app_commands.command(name='lpc',description='Plays a LPC track.')
-    # async def lpc(self,inter: discord.Interaction) -> None:
-    #     user = inter.message.author
-    #     voice_channel = inter.user.voice.channel
 
     wiki_group = app_commands.Group(name='wiki',description='Wiki command group')
 

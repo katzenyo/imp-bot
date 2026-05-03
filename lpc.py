@@ -154,53 +154,5 @@ class LPCPlayer(commands.Cog):
                     ephemeral=True
                 )
 
-    # @app_commands.command(name="stop", description="Stop playback and disconnect")
-    # async def stop(self, interaction: discord.Interaction):
-    #     """Stop playback and clear the queue"""
-    #     if self.current_voice_client and self.current_voice_client.is_connected():
-    #         self.queue.clear()
-    #         await self.current_voice_client.disconnect()
-    #         self.current_voice_client = None
-    #         await interaction.response.send_message("⏹️ Stopped playback")
-    #     else:
-    #         await interaction.response.send_message(
-    #             "Not currently playing anything!",
-    #             ephemeral=True
-    #         )
-
-    # @app_commands.command(name="skip", description="Skip to the next track")
-    # async def skip(self, interaction: discord.Interaction):
-    #     """Skip the current track"""
-    #     if self.current_voice_client and self.current_voice_client.is_playing():
-    #         self.current_voice_client.stop()
-    #         await interaction.response.send_message("⏭️ Skipped track")
-    #     else:
-    #         await interaction.response.send_message(
-    #             "Not currently playing anything!",
-    #             ephemeral=True
-    #         )
-
-    # @app_commands.command(name="queue", description="Show the current queue")
-    # async def show_queue(self, interaction: discord.Interaction):
-    #     """Display the current queue"""
-    #     if not self.queue:
-    #         await interaction.response.send_message(
-    #             "Queue is empty!",
-    #             ephemeral=True
-    #         )
-    #         return
-
-    #     queue_list = "\n".join([
-    #         f"{i+1}. {track.name}"
-    #         for i, track in enumerate(self.queue[:10])
-    #     ])
-
-    #     total = len(self.queue)
-    #     message = f"**Queue ({total} tracks):**\n{queue_list}"
-    #     if total > 10:
-    #         message += f"\n... and {total - 10} more"
-
-    #     await interaction.response.send_message(message)
-
 async def setup(bot: commands.Bot):
     await bot.add_cog(LPCPlayer(bot)) 
