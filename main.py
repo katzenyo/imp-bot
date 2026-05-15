@@ -39,7 +39,9 @@ class ImpBot(commands.Bot):
             'birthdays',
             'letterboxd',
             'starboard',
-            'lpc'
+            'lpc',
+            'poll',
+            'twitch'
         ]
 
         for cog in cogs_list:
