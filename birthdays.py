@@ -1,10 +1,13 @@
 import datetime
 import calendar
+import logging
 import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from typing import Optional, List
+
+log = logging.getLogger(__name__)
 
 DB_PATH = "impbot.db"
 BIRTHDAY_EMBED_COLOR = discord.Color.from_rgb(255, 172, 51)
@@ -99,16 +102,20 @@ class BirthdayCog(commands.Cog):
             channel = await self._get_birthday_channel(guild)
             if not channel:
                 print(f'[BIRTHDAY] No birthday channel available for guild {guild.name} [{guild.id}]')
+                log.warning('No birthday channel available for guild %s [%d]', guild.name, guild.id)
                 continue
 
             try:
                 embed = self._build_birthday_embed(member)
                 await channel.send(embed=embed)
                 print(f'[BIRTHDAY] Sent birthday message for {member.display_name} in {guild.name}')
+                log.info('Sent birthday message for %s in %s', member.display_name, guild.name)
             except discord.Forbidden:
                 print(f'[BIRTHDAY] Missing permissions to send in {channel.name} [{guild.name}]')
+                log.error('Missing permissions to send in %s [%s]', channel.name, guild.name)
             except discord.HTTPException as e:
                 print(f'[BIRTHDAY] Failed to send birthday message: {e}')
+                log.error('Failed to send birthday message: %s', e)
 
     @birthday_group.command(name='set', description='Set your birthday (month and day)')
     @app_commands.describe(month='Month', day='Day of the month (1-31)')

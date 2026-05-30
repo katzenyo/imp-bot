@@ -1,3 +1,4 @@
+import logging
 import os
 import discord
 import random
@@ -9,7 +10,9 @@ from discord.app_commands import Group, command
 from discord.ext.commands import GroupCog
 from dotenv import load_dotenv
 
-load_dotenv()
+log = logging.getLogger(__name__)
+
+load_dotenv(override=True)
 TWITCH_ACCESS_TOKEN=os.getenv("TWITCH_ACCESS_TOKEN")
 TWITCH_CLIENT_ID=os.getenv("TWITCH_CLIENT_ID")
 TWITCH_SECRET=os.getenv("TWITCH_CLIENT_SECRET")
@@ -126,6 +129,7 @@ class SlashCommands(commands.Cog):
                         return
                     case _:
                         print(f"[ERROR] {wiki_response.url} returned a {wiki_response.status} response")
+                        log.error('%s returned a %d response', wiki_response.url, wiki_response.status)
                         return
     
     # @wiki_group.command(name='search',description='Searchs Wikipedia',)

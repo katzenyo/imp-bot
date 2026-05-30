@@ -9,18 +9,20 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 # loading API tokens as environment variables
-load_dotenv()
+load_dotenv(override=True)
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 TWITCH_ACCESS_TOKEN = os.getenv("TWITCH_ACCESS_TOKEN")
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
 
-#logging.basicConfig(level=logging.INFO)
-handler = logging.FileHandler(
-    filename='discord.log',
-    encoding='utf-8',
-    mode='w'
-    )
+discord_handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+
+_app_handler = logging.FileHandler(filename='impbot.log', encoding='utf-8', mode='a')
+_app_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+logging.basicConfig(level=logging.INFO, handlers=[_app_handler])
+logging.getLogger('discord').propagate = False
+
+log = logging.getLogger(__name__)
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing from the environment. Check your .env file.")
@@ -48,8 +50,10 @@ class ImpBot(commands.Bot):
             try:
                 await self.load_extension(cog)
                 print(f'{cog} successfully loaded!')
+                log.info(f'{cog} successfully loaded!')
             except Exception as e:
                 print(f'{cog} loading failed: {e}')
+                log.error(f'{cog} loading failed: {e}')
 
         if TWITCH_ACCESS_TOKEN:
             twitch_headers = {'Authorization': f'Bearer {TWITCH_ACCESS_TOKEN}'}
@@ -63,18 +67,24 @@ class ImpBot(commands.Bot):
                                 delta = datetime.timedelta(seconds=expires_in)
                                 if expires_in >= datetime.timedelta(weeks=1).total_seconds():
                                     print(f'~~~{delta.days} days until Twitch token expires!~~~')
+                                    log.info(f'~~~{delta.days} days until Twitch token expires!~~~')
                                 else:
                                     hours = int(delta.total_seconds() // 3600)
                                     print(f'!!! RENEW YOUR TOKEN !!!\n{hours} hours until Twitch token expires.\n!!! RENEW YOUR TOKEN !!!')
+                                    log.warning(f'!!! RENEW YOUR TOKEN !!!\n{hours} hours until Twitch token expires.\n!!! RENEW YOUR TOKEN !!!')
                             case 401:
                                 error_body = await response.json()
                                 print(f'Twitch access token invalid. Verify token validity or expiration.\n{response.status} response!\n{response.headers}\n{error_body}')
+                                log.error(f'Twitch access token invalid. Verify token validity or expiration.\n{response.status} response!\n{response.headers}\n{error_body}')
                             case _:
                                 print(f'Unexpected Twitch validation response: {response.status}')
+                                log.error(f'Unexpected Twitch validation response: {response.status}')
                 except aiohttp.ClientConnectorError as e:
                     print(f'Twitch validation connection error: {e}')
+                    log.error(f'Twitch validation connection error: {e}')
         else:
             print('TWITCH_ACCESS_TOKEN not set, skipping validation.')
+            log.info('TWITCH_ACCESS_TOKEN not set, skipping validation.')
 
 
 bot = ImpBot(
@@ -90,6 +100,7 @@ bot = ImpBot(
 @bot.event
 async def on_ready():
     print('CBot is logged in as {0.user}'.format(bot))
+    log.info('CBot is logged in as {0.user}'.format(bot))
     await bot.change_presence(activity=discord.Game(f"Danny Simulator {datetime.date.today().year+1}"))
 
 ##############################################################################
@@ -129,4 +140,4 @@ async def whois(ctx: commands.Context, *, member: discord.Member):
     info = '{0} joined on {0.joined_at} and has {1} roles.'
     await ctx.send(info.format(member, len(member.roles)))
 
-bot.run(f"{DISCORD_TOKEN}", log_handler=handler, log_level=logging.DEBUG)
+bot.run(f"{DISCORD_TOKEN}", log_handler=discord_handler, log_level=logging.DEBUG)

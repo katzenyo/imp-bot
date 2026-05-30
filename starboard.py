@@ -1,8 +1,11 @@
+import logging
 import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 DB_PATH = "impbot.db"
 STAR_EMOJI = "⭐"
@@ -131,6 +134,7 @@ class StarboardCog(commands.Cog):
                     await self.db.commit()
                 except (discord.Forbidden, discord.HTTPException) as e:
                     print(f"[STARBOARD] Failed to post message: {e}")
+                    log.error('Failed to post message: %s', e)
         elif entry:
             try:
                 sb_message = await starboard_channel.fetch_message(entry["starboard_message_id"])
