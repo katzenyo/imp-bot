@@ -254,7 +254,7 @@ class TwitchCog(commands.Cog):
             channel = await self._get_stream_channel(guild_id)
             if channel:
                 try:
-                    await channel.send(embed=embed, view=TwitchLinkButton())
+                    await channel.send(content=f'@Here', embed=embed, view=TwitchLinkButton())
                     print(f'[EVENTSUB] Sent notification for {login} in guild {guild_id}')
                     log.info('Sent notification for %s in guild %d', login, guild_id)
                 except discord.HTTPException as e:
