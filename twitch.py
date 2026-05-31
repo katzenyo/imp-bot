@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import aiohttp
 import aiosqlite
 import discord
@@ -245,7 +246,7 @@ class TwitchCog(commands.Cog):
             color=discord.Color.purple()
         )
         embed.set_author(name=f'{login} is now live on Twitch!', url=f'https://www.twitch.tv/{login}')
-        embed.set_image(url=f'https://static-cdn.jtvnw.net/previews-ttv/live_user_{login}-440x248.jpg')
+        embed.set_image(url=f'https://static-cdn.jtvnw.net/previews-ttv/live_user_{login}-440x248.jpg?t={int(time.time())}')
         if avatar_url:
             embed.set_thumbnail(url=avatar_url)
         embed.set_footer(text='Imp Bot 10000')
@@ -254,7 +255,7 @@ class TwitchCog(commands.Cog):
             channel = await self._get_stream_channel(guild_id)
             if channel:
                 try:
-                    await channel.send(content=f'@Here', embed=embed, view=TwitchLinkButton())
+                    await channel.send(content='@here', embed=embed, view=TwitchLinkButton(), allowed_mentions=discord.AllowedMentions(everyone=True))
                     print(f'[EVENTSUB] Sent notification for {login} in guild {guild_id}')
                     log.info('Sent notification for %s in guild %d', login, guild_id)
                 except discord.HTTPException as e:
