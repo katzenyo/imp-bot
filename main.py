@@ -1,19 +1,16 @@
 import datetime
-import json
 import logging
 import os
 
-import aiohttp
+import aiosqlite
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-# loading API tokens as environment variables
+import twitch_auth
+
 load_dotenv(override=True)
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-TWITCH_ACCESS_TOKEN = os.getenv("TWITCH_ACCESS_TOKEN")
-TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
-TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
 
 discord_handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
@@ -55,36 +52,6 @@ class ImpBot(commands.Bot):
                 print(f'{cog} loading failed: {e}')
                 log.error(f'{cog} loading failed: {e}')
 
-        if TWITCH_ACCESS_TOKEN:
-            twitch_headers = {'Authorization': f'Bearer {TWITCH_ACCESS_TOKEN}'}
-            async with aiohttp.ClientSession(headers=twitch_headers) as session:
-                try:
-                    async with session.get('https://id.twitch.tv/oauth2/validate') as response:
-                        match response.status:
-                            case 200:
-                                validation_response = await response.json()
-                                expires_in = validation_response['expires_in']
-                                delta = datetime.timedelta(seconds=expires_in)
-                                if expires_in >= datetime.timedelta(weeks=1).total_seconds():
-                                    print(f'~~~{delta.days} days until Twitch token expires!~~~')
-                                    log.info(f'~~~{delta.days} days until Twitch token expires!~~~')
-                                else:
-                                    hours = int(delta.total_seconds() // 3600)
-                                    print(f'!!! RENEW YOUR TOKEN !!!\n{hours} hours until Twitch token expires.\n!!! RENEW YOUR TOKEN !!!')
-                                    log.warning(f'!!! RENEW YOUR TOKEN !!!\n{hours} hours until Twitch token expires.\n!!! RENEW YOUR TOKEN !!!')
-                            case 401:
-                                error_body = await response.json()
-                                print(f'Twitch access token invalid. Verify token validity or expiration.\n{response.status} response!\n{response.headers}\n{error_body}')
-                                log.error(f'Twitch access token invalid. Verify token validity or expiration.\n{response.status} response!\n{response.headers}\n{error_body}')
-                            case _:
-                                print(f'Unexpected Twitch validation response: {response.status}')
-                                log.error(f'Unexpected Twitch validation response: {response.status}')
-                except aiohttp.ClientConnectorError as e:
-                    print(f'Twitch validation connection error: {e}')
-                    log.error(f'Twitch validation connection error: {e}')
-        else:
-            print('TWITCH_ACCESS_TOKEN not set, skipping validation.')
-            log.info('TWITCH_ACCESS_TOKEN not set, skipping validation.')
 
 
 bot = ImpBot(
@@ -116,28 +83,32 @@ async def sync(ctx: commands.Context) -> None:
 
 @bot.command()
 @commands.is_owner()
-async def refresh_twitch(_ctx: commands.Context) -> None:
-    """Refreshes your Twitch API token"""
-    twitch_headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    params = {
-        'client_id': f'{TWITCH_CLIENT_ID}',
-        'client_secret': f'{TWITCH_CLIENT_SECRET}',
-        'grant_type': 'client_credentials'
-        }
-    async with aiohttp.ClientSession(headers=twitch_headers) as session:
-        async with session.post('https://id.twitch.tv/oauth2/token', params=params) as response:
-            refresh_response = await response.json()
-
-            if response.status == 400:
-                print(f'Token refresh failed: {refresh_response["message"]}')
-            elif response.status == 200:
-                print(json.dumps(refresh_response, indent=2))
-            else:
-                print(refresh_response)
+async def refresh_twitch(ctx: commands.Context) -> None:
+    """Manually refreshes the Twitch API token"""
+    async with aiosqlite.connect('impbot.db') as db:
+        try:
+            await twitch_auth.force_refresh(db)
+            await ctx.send('Twitch token refreshed successfully.')
+        except RuntimeError as e:
+            await ctx.send(f'Refresh failed: {e}')
 
 @bot.command(description='Returns some basic stats about the user.')
 async def whois(ctx: commands.Context, *, member: discord.Member):
     info = '{0} joined on {0.joined_at} and has {1} roles.'
     await ctx.send(info.format(member, len(member.roles)))
+
+# @bot.command()
+# @commands.is_owner()
+# async def test_notification(ctx: commands.Context, twitch_login: str) -> None:
+#     cog = bot.cogs.get('TwitchCog')
+#     payload = {
+#         'event': {
+#             'broadcaster_user_id': '10386664',
+#             'broadcaster_user_login': twitch_login,
+#         }
+#     }
+#     await cog._handle_notification(payload)
+#     await ctx.send('Notification sent.')
+
 
 bot.run(f"{DISCORD_TOKEN}", log_handler=discord_handler, log_level=logging.DEBUG)

@@ -1,19 +1,15 @@
 import asyncio
 import logging
-import os
 import aiohttp
 import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands
-from dotenv import load_dotenv
 from typing import Optional
 
-log = logging.getLogger(__name__)
+import twitch_auth
 
-load_dotenv(override=True)
-TWITCH_ACCESS_TOKEN = os.getenv("TWITCH_ACCESS_TOKEN")
-TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
+log = logging.getLogger(__name__)
 
 DB_PATH = "impbot.db"
 EVENTSUB_WS_URL = "wss://eventsub.wss.twitch.tv/ws"
@@ -23,10 +19,6 @@ class TwitchCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.db: aiosqlite.Connection = None  # type: ignore[assignment]
-        self.twitch_headers = {
-            'Authorization': f'Bearer {TWITCH_ACCESS_TOKEN}',
-            'Client-Id': TWITCH_CLIENT_ID or '',
-        }
         self._eventsub_task: Optional[asyncio.Task] = None
         self._session_id: Optional[str] = None
 
@@ -40,6 +32,9 @@ class TwitchCog(commands.Cog):
         self.db = await aiosqlite.connect(DB_PATH)
         self.db.row_factory = aiosqlite.Row
         await self._create_tables()
+        await twitch_auth.ensure_table(self.db)
+        await twitch_auth.seed_from_env(self.db)
+        await twitch_auth.log_status(self.db)
         self._eventsub_task = asyncio.create_task(self._eventsub_loop())
 
     async def cog_unload(self) -> None:
@@ -128,7 +123,7 @@ class TwitchCog(commands.Cog):
 
     async def _eventsub_session(self, ws_url: str, resubscribe: bool) -> Optional[str]:
         """Runs one EventSub session. Returns reconnect URL if Twitch requested one, else None."""
-        async with aiohttp.ClientSession(headers=self.twitch_headers) as http_session:
+        async with aiohttp.ClientSession(headers=await twitch_auth.get_headers(self.db)) as http_session:
             async with http_session.ws_connect(ws_url) as ws:
                 self._session_id = await self._handshake(ws)
                 print(f'[EVENTSUB] Connected (session {self._session_id})')
@@ -185,7 +180,7 @@ class TwitchCog(commands.Cog):
                 log.error('Failed to subscribe to %s: %d %s', user_id, resp.status, body)
 
     async def _cancel_subscription(self, twitch_user_id: str) -> None:
-        async with aiohttp.ClientSession(headers=self.twitch_headers) as session:
+        async with aiohttp.ClientSession(headers=await twitch_auth.get_headers(self.db)) as session:
             async with session.get(
                 f'https://api.twitch.tv/helix/eventsub/subscriptions?user_id={twitch_user_id}'
             ) as resp:
@@ -219,7 +214,7 @@ class TwitchCog(commands.Cog):
         if not guild_ids:
             return
 
-        async with aiohttp.ClientSession(headers=self.twitch_headers) as session:
+        async with aiohttp.ClientSession(headers=await twitch_auth.get_headers(self.db)) as session:
             async with session.get(
                 f'https://api.twitch.tv/helix/streams?user_login={login}'
             ) as resp:
@@ -296,7 +291,7 @@ class TwitchCog(commands.Cog):
 
         await inter.response.defer(ephemeral=True)
 
-        async with aiohttp.ClientSession(headers=self.twitch_headers) as session:
+        async with aiohttp.ClientSession(headers=await twitch_auth.get_headers(self.db)) as session:
             async with session.get(f'https://api.twitch.tv/helix/users?login={twitch_login}') as resp:
                 if resp.status != 200:
                     await inter.followup.send(f'Failed to look up `{twitch_login}`.', ephemeral=True)

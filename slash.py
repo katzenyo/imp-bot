@@ -3,25 +3,20 @@ import os
 import discord
 import random
 import aiohttp
-import asyncio
+import aiosqlite
 from discord import app_commands
 from discord.ext import commands
-from discord.app_commands import Group, command
-from discord.ext.commands import GroupCog
 from dotenv import load_dotenv
+
+import twitch_auth
 
 log = logging.getLogger(__name__)
 
 load_dotenv(override=True)
-TWITCH_ACCESS_TOKEN=os.getenv("TWITCH_ACCESS_TOKEN")
-TWITCH_CLIENT_ID=os.getenv("TWITCH_CLIENT_ID")
-TWITCH_SECRET=os.getenv("TWITCH_CLIENT_SECRET")
 WIKI_ACCESS_TOKEN=os.getenv("WIKI_ACCESS_TOKEN")
 WIKI_CLIENT_ID=os.getenv("WIKI_CLIENT_ID")
 DEV_GUILD=discord.Object(154048730771881984) # Dev server guild ID
 
-twitch_headers = {'Authorization': f'Bearer {TWITCH_ACCESS_TOKEN}', 'Client-Id': f'{TWITCH_CLIENT_ID}'} 
-twitch_refresh_header = {'Content-Type': 'application/x-www-form-urlencoded'}
 wiki_headers = {'Authorization': f'Bearer {WIKI_ACCESS_TOKEN}', 'Client-Id': f'{WIKI_CLIENT_ID}'}
 
 async def is_owner(interaction: discord.Interaction) -> bool:
@@ -31,18 +26,25 @@ async def is_owner(interaction: discord.Interaction) -> bool:
 class SlashCommands(commands.Cog):
     def __init__(self,bot: commands.Bot) -> None:
         self.bot = bot
+        self.db: aiosqlite.Connection = None  # type: ignore[assignment]
+
+    async def cog_load(self) -> None:
+        self.db = await aiosqlite.connect('impbot.db')
+        self.db.row_factory = aiosqlite.Row
+
+    async def cog_unload(self) -> None:
+        if self.db:
+            await self.db.close()
 
     @app_commands.command(name='refresh-twitch-token', description='Refreshes the Twitch API token')
     @app_commands.check(is_owner)
     async def refresh_twitch_token(self, inter: discord.Interaction) -> None:
-        async with aiohttp.ClientSession(headers=twitch_refresh_header) as session:
-            params = {
-                'grant_type': 'refresh_token',
-                'refresh_token': f'{TWITCH_ACCESS_TOKEN}',
-                'client_id': f'{TWITCH_CLIENT_ID}',
-                'client_secret': f'{TWITCH_SECRET}'
-            }
-            pass
+        await inter.response.defer(ephemeral=True)
+        try:
+            await twitch_auth.force_refresh(self.db)
+            await inter.followup.send('Twitch token refreshed successfully.', ephemeral=True)
+        except RuntimeError as e:
+            await inter.followup.send(f'Refresh failed: {e}', ephemeral=True)
 
     @app_commands.command(name='roll', description='Rolls a d20')
     async def roll(self, inter: discord.Interaction) -> None:
@@ -172,7 +174,7 @@ class SlashCommands(commands.Cog):
     @app_commands.guilds(discord.Object(287104624865837067)) # ImpZone guild ID
     async def bobstream(self,inter: discord.Interaction) -> None:
         username = 'bn03'
-        async with aiohttp.ClientSession(headers=twitch_headers) as session:
+        async with aiohttp.ClientSession(headers=await twitch_auth.get_headers(self.db)) as session:
             async with session.get(f'https://api.twitch.tv/helix/streams?user_login={username}') as stream_info_response:
                 twitch_stream_info = await stream_info_response.json()
                 #thumbnail_url = twitch_user_info['data'][0]['profile_image_url']
