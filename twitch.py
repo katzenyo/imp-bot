@@ -5,7 +5,7 @@ import aiohttp
 import aiosqlite
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from typing import Optional
 
 import twitch_auth
@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 DB_PATH = "impbot.db"
 EVENTSUB_WS_URL = "wss://eventsub.wss.twitch.tv/ws"
+NOTIFY_COOLDOWN = 7200  # 2 hours — prevents double-notifying for the same stream session
 
 
 class TwitchCog(commands.Cog):
@@ -37,10 +38,12 @@ class TwitchCog(commands.Cog):
         await twitch_auth.seed_from_env(self.db)
         await twitch_auth.log_status(self.db)
         self._eventsub_task = asyncio.create_task(self._eventsub_loop())
+        self._poll_task.start()
 
     async def cog_unload(self) -> None:
         if self._eventsub_task:
             self._eventsub_task.cancel()
+        self._poll_task.cancel()
         if self.db:
             await self.db.close()
 
@@ -56,9 +59,15 @@ class TwitchCog(commands.Cog):
                 twitch_user_id TEXT NOT NULL,
                 twitch_login TEXT NOT NULL,
                 guild_id INTEGER NOT NULL,
+                last_notified_at INTEGER,
                 PRIMARY KEY (twitch_user_id, guild_id)
             )
         ''')
+        # Migration for existing databases that predate last_notified_at
+        try:
+            await self.db.execute('ALTER TABLE watched_streams ADD COLUMN last_notified_at INTEGER')
+        except aiosqlite.OperationalError:
+            pass
         await self.db.commit()
 
     # -------------------------------------------------------------------------
@@ -74,9 +83,13 @@ class TwitchCog(commands.Cog):
             return None
         guild = self.bot.get_guild(guild_id)
         if not guild:
+            log.warning('[TWITCH] Guild %d not found in cache', guild_id)
             return None
         channel = guild.get_channel(row['channel_id'])
-        return channel if isinstance(channel, discord.TextChannel) else None
+        if not isinstance(channel, discord.TextChannel):
+            log.warning('[TWITCH] Channel %d in guild %d is not a text channel or no longer exists', row['channel_id'], guild_id)
+            return None
+        return channel
 
     async def _get_all_watched_user_ids(self) -> list[str]:
         async with self.db.execute('SELECT DISTINCT twitch_user_id FROM watched_streams') as cursor:
@@ -89,6 +102,39 @@ class TwitchCog(commands.Cog):
         ) as cursor:
             rows = await cursor.fetchall()
         return [row['guild_id'] for row in rows]
+
+    async def _update_last_notified(self, twitch_user_id: str, guild_id: int) -> None:
+        await self.db.execute(
+            'UPDATE watched_streams SET last_notified_at = ? WHERE twitch_user_id = ? AND guild_id = ?',
+            (int(time.time()), twitch_user_id, guild_id)
+        )
+        await self.db.commit()
+
+    # -------------------------------------------------------------------------
+    # Embed / view builder
+    # -------------------------------------------------------------------------
+
+    def _build_notification(self, login: str, stream: dict, avatar_url: Optional[str]) -> tuple[discord.Embed, discord.ui.View]:
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(
+            label='Watch now!',
+            style=discord.ButtonStyle.blurple,
+            url=f'https://www.twitch.tv/{login}'
+        ))
+
+        embed = discord.Embed(
+            title=stream.get('title', 'Untitled stream'),
+            url=f'https://www.twitch.tv/{login}',
+            description=f'Now streaming {stream.get("game_name", "something")}',
+            color=discord.Color.purple()
+        )
+        embed.set_author(name=f'{login} is now live on Twitch!', url=f'https://www.twitch.tv/{login}')
+        embed.set_image(url=f'https://static-cdn.jtvnw.net/previews-ttv/live_user_{login}-440x248.jpg?t={int(time.time())}')
+        if avatar_url:
+            embed.set_thumbnail(url=avatar_url)
+        embed.set_footer(text='Imp Bot 10000')
+
+        return embed, view
 
     # -------------------------------------------------------------------------
     # EventSub WebSocket
@@ -220,9 +266,11 @@ class TwitchCog(commands.Cog):
                 f'https://api.twitch.tv/helix/streams?user_login={login}'
             ) as resp:
                 if resp.status != 200:
+                    log.error('[EVENTSUB] Helix /streams returned %d for %s', resp.status, login)
                     return
                 stream_data = await resp.json()
                 if not stream_data.get('data'):
+                    log.warning('[EVENTSUB] Stream data empty for %s — went offline before fetch', login)
                     return
                 stream = stream_data['data'][0]
 
@@ -230,37 +278,93 @@ class TwitchCog(commands.Cog):
                 user_data = await resp.json()
                 avatar_url = user_data['data'][0]['profile_image_url'] if user_data.get('data') else None
 
-        class TwitchLinkButton(discord.ui.View):
-            def __init__(self):
-                super().__init__()
-                self.add_item(discord.ui.Button(
-                    label='Watch now!',
-                    style=discord.ButtonStyle.blurple,
-                    url=f'https://www.twitch.tv/{login}'
-                ))
-
-        embed = discord.Embed(
-            title=stream.get('title', 'Untitled stream'),
-            url=f'https://www.twitch.tv/{login}',
-            description=f'Now streaming {stream.get("game_name", "something")}',
-            color=discord.Color.purple()
-        )
-        embed.set_author(name=f'{login} is now live on Twitch!', url=f'https://www.twitch.tv/{login}')
-        embed.set_image(url=f'https://static-cdn.jtvnw.net/previews-ttv/live_user_{login}-440x248.jpg?t={int(time.time())}')
-        if avatar_url:
-            embed.set_thumbnail(url=avatar_url)
-        embed.set_footer(text='Imp Bot 10000')
+        embed, view = self._build_notification(login, stream, avatar_url)
 
         for guild_id in guild_ids:
             channel = await self._get_stream_channel(guild_id)
-            if channel:
-                try:
-                    await channel.send(content='@here', embed=embed, view=TwitchLinkButton(), allowed_mentions=discord.AllowedMentions(everyone=True))
-                    print(f'[EVENTSUB] Sent notification for {login} in guild {guild_id}')
-                    log.info('Sent notification for %s in guild %d', login, guild_id)
-                except discord.HTTPException as e:
-                    print(f'[EVENTSUB] Failed to send notification in guild {guild_id}: {e}')
-                    log.error('Failed to send notification in guild %d: %s', guild_id, e)
+            if not channel:
+                log.warning('[EVENTSUB] No notification channel for guild %d, skipping', guild_id)
+                continue
+            try:
+                await channel.send(content='@here', embed=embed, view=view, allowed_mentions=discord.AllowedMentions(everyone=True))
+                await self._update_last_notified(user_id, guild_id)
+                print(f'[EVENTSUB] Sent notification for {login} in guild {guild_id}')
+                log.info('Sent notification for %s in guild %d', login, guild_id)
+            except discord.HTTPException as e:
+                print(f'[EVENTSUB] Failed to send notification in guild {guild_id}: {e}')
+                log.error('Failed to send notification in guild %d: %s', guild_id, e)
+
+    # -------------------------------------------------------------------------
+    # Polling fallback
+    # -------------------------------------------------------------------------
+
+    @tasks.loop(minutes=5)
+    async def _poll_task(self) -> None:
+        try:
+            await self._poll_live_streams()
+        except Exception as e:
+            log.warning('[POLL] Error during poll: %s', e)
+
+    @_poll_task.before_loop
+    async def _before_poll(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _poll_live_streams(self) -> None:
+        user_ids = await self._get_all_watched_user_ids()
+        if not user_ids:
+            return
+
+        async with aiohttp.ClientSession(headers=await twitch_auth.get_headers(self.db)) as session:
+            live: dict[str, dict] = {}
+            for i in range(0, len(user_ids), 100):
+                batch = user_ids[i:i + 100]
+                params = '&'.join(f'user_id={uid}' for uid in batch)
+                async with session.get(f'https://api.twitch.tv/helix/streams?{params}') as resp:
+                    if resp.status != 200:
+                        log.error('[POLL] Helix /streams returned %d', resp.status)
+                        return
+                    data = await resp.json()
+                for stream in data.get('data', []):
+                    live[stream['user_id']] = stream
+
+            now = int(time.time())
+
+            for user_id, stream in live.items():
+                login = stream['user_login']
+
+                async with self.db.execute(
+                    'SELECT guild_id, last_notified_at FROM watched_streams WHERE twitch_user_id = ?',
+                    (user_id,)
+                ) as cursor:
+                    guild_rows = await cursor.fetchall()
+
+                guilds_to_notify = [
+                    row for row in guild_rows
+                    if row['last_notified_at'] is None or now - row['last_notified_at'] >= NOTIFY_COOLDOWN
+                ]
+                if not guilds_to_notify:
+                    continue
+
+                async with session.get(f'https://api.twitch.tv/helix/users?login={login}') as resp:
+                    user_data = await resp.json()
+                    avatar_url = user_data['data'][0]['profile_image_url'] if user_data.get('data') else None
+
+                embed, view = self._build_notification(login, stream, avatar_url)
+
+                for row in guilds_to_notify:
+                    guild_id = row['guild_id']
+                    channel = await self._get_stream_channel(guild_id)
+                    if not channel:
+                        continue
+                    try:
+                        await channel.send(
+                            content='@here', embed=embed, view=view,
+                            allowed_mentions=discord.AllowedMentions(everyone=True)
+                        )
+                        await self._update_last_notified(user_id, guild_id)
+                        log.info('[POLL] Sent notification for %s in guild %d', login, guild_id)
+                    except discord.HTTPException as e:
+                        log.error('[POLL] Failed to send notification for %s in guild %d: %s', login, guild_id, e)
 
     # -------------------------------------------------------------------------
     # Admin commands
