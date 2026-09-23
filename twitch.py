@@ -15,6 +15,8 @@ log = logging.getLogger(__name__)
 DB_PATH = "impbot.db"
 EVENTSUB_WS_URL = "wss://eventsub.wss.twitch.tv/ws"
 NOTIFY_COOLDOWN = 7200  # 2 hours — prevents double-notifying for the same stream session
+KEEPALIVE_GRACE = 10  # seconds of silence tolerated beyond Twitch's keepalive timeout before reconnecting
+SUBSCRIBE_RETRY_DELAYS = (30, 60, 120, 300, 600)  # seconds between retries of subscriptions rejected with 429
 
 
 class TwitchCog(commands.Cog):
@@ -22,6 +24,7 @@ class TwitchCog(commands.Cog):
         self.bot = bot
         self.db: aiosqlite.Connection = None  # type: ignore[assignment]
         self._eventsub_task: Optional[asyncio.Task] = None
+        self._retry_task: Optional[asyncio.Task] = None
         self._session_id: Optional[str] = None
 
     stream_group = app_commands.Group(name='stream', description='Stream notification commands')
@@ -43,6 +46,8 @@ class TwitchCog(commands.Cog):
     async def cog_unload(self) -> None:
         if self._eventsub_task:
             self._eventsub_task.cancel()
+        if self._retry_task:
+            self._retry_task.cancel()
         self._poll_task.cancel()
         if self.db:
             await self.db.close()
@@ -148,18 +153,16 @@ class TwitchCog(commands.Cog):
 
         while True:
             try:
-                reconnect_url = await self._eventsub_session(ws_url, resubscribe)
-                if reconnect_url:
-                    # Planned reconnect — subscriptions migrate automatically
-                    ws_url = reconnect_url
-                    resubscribe = False
-                    backoff = 5
-                else:
-                    ws_url = EVENTSUB_WS_URL
-                    resubscribe = True
+                # Only returns on a planned reconnect — subscriptions migrate automatically
+                ws_url = await self._eventsub_session(ws_url, resubscribe)
+                resubscribe = False
+                backoff = 5
             except asyncio.CancelledError:
                 return
             except Exception as e:
+                # Losing a session that got past the handshake isn't a repeated failure, so restart the backoff
+                if self._session_id:
+                    backoff = 5
                 self._session_id = None
                 print(f'[EVENTSUB] Disconnected: {e}, retrying in {backoff}s')
                 log.warning('Disconnected: %s, retrying in %ds', e, backoff)
@@ -168,18 +171,29 @@ class TwitchCog(commands.Cog):
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 300)
 
-    async def _eventsub_session(self, ws_url: str, resubscribe: bool) -> Optional[str]:
-        """Runs one EventSub session. Returns reconnect URL if Twitch requested one, else None."""
+    async def _eventsub_session(self, ws_url: str, resubscribe: bool) -> str:
+        """Runs one EventSub session. Returns the reconnect URL if Twitch requests one; raises if the connection is lost."""
         async with aiohttp.ClientSession(headers=await twitch_auth.get_headers(self.db)) as http_session:
             async with http_session.ws_connect(ws_url) as ws:
-                self._session_id = await self._handshake(ws)
+                self._session_id, keepalive_timeout = await self._handshake(ws)
                 print(f'[EVENTSUB] Connected (session {self._session_id})')
                 log.info('Connected (session %s)', self._session_id)
 
                 if resubscribe:
-                    await self._subscribe_all(http_session, self._session_id)
+                    if self._retry_task:
+                        self._retry_task.cancel()
+                    rate_limited = await self._subscribe_all(http_session, self._session_id)
+                    if rate_limited:
+                        self._retry_task = asyncio.create_task(self._retry_subscriptions(rate_limited))
 
-                async for msg in ws:
+                # Twitch sends a keepalive whenever it's idle, so silence past the timeout means the connection is dead
+                receive_timeout = keepalive_timeout + KEEPALIVE_GRACE
+                while True:
+                    try:
+                        msg = await ws.receive(timeout=receive_timeout)
+                    except asyncio.TimeoutError:
+                        raise ConnectionError(f'No message from Twitch in {receive_timeout}s')
+
                     if msg.type == aiohttp.WSMsgType.TEXT:
                         data = msg.json()
                         msg_type = data.get('metadata', {}).get('message_type')
@@ -190,28 +204,57 @@ class TwitchCog(commands.Cog):
                                 return data['payload']['session']['reconnect_url']
                             case 'session_keepalive' | 'session_welcome':
                                 pass
-                    elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                        raise aiohttp.ClientError(f'WebSocket closed: {ws.close_code}')
+                    elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING,
+                                      aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                        raise ConnectionError(f'WebSocket closed (code {ws.close_code})')
 
-        self._session_id = None
-        return None
-
-    async def _handshake(self, ws: aiohttp.ClientWebSocketResponse) -> str:
-        async def _await_welcome() -> str:
+    async def _handshake(self, ws: aiohttp.ClientWebSocketResponse) -> tuple[str, int]:
+        """Waits for session_welcome. Returns the session ID and keepalive timeout in seconds."""
+        async def _await_welcome() -> tuple[str, int]:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = msg.json()
                     if data.get('metadata', {}).get('message_type') == 'session_welcome':
-                        return data['payload']['session']['id']
+                        session = data['payload']['session']
+                        return session['id'], session.get('keepalive_timeout_seconds') or 10
             raise RuntimeError('WebSocket closed before session_welcome')
 
         return await asyncio.wait_for(_await_welcome(), timeout=15)
 
-    async def _subscribe_all(self, session: aiohttp.ClientSession, session_id: str) -> None:
+    async def _subscribe_all(self, session: aiohttp.ClientSession, session_id: str) -> list[str]:
+        """Subscribes to every watched user. Returns the user IDs rejected with 429."""
+        rate_limited = []
         for user_id in await self._get_all_watched_user_ids():
-            await self._subscribe(session, session_id, user_id)
+            if await self._subscribe(session, session_id, user_id) == 429:
+                rate_limited.append(user_id)
+        return rate_limited
 
-    async def _subscribe(self, session: aiohttp.ClientSession, session_id: str, user_id: str) -> None:
+    async def _retry_subscriptions(self, user_ids: list[str]) -> None:
+        """Retries subscriptions rejected with 429. On reconnect these have been transient — likely the dead
+        session's subscriptions still counting against the cost limit until Twitch disables them."""
+        for delay in SUBSCRIBE_RETRY_DELAYS:
+            await asyncio.sleep(delay)
+            if not self._session_id:
+                continue
+            try:
+                async with aiohttp.ClientSession(headers=await twitch_auth.get_headers(self.db)) as session:
+                    still_limited = []
+                    for user_id in user_ids:
+                        if await self._subscribe(session, self._session_id, user_id) == 429:
+                            still_limited.append(user_id)
+                    user_ids = still_limited
+            except Exception as e:
+                log.warning('Subscription retry failed: %s', e)
+                continue
+            if not user_ids:
+                print('[EVENTSUB] Retried subscriptions succeeded')
+                log.info('Retried subscriptions succeeded')
+                return
+        print(f'[EVENTSUB] Giving up on subscriptions for {user_ids}')
+        log.error('Giving up on subscriptions for %s after %d retries', user_ids, len(SUBSCRIBE_RETRY_DELAYS))
+
+    async def _subscribe(self, session: aiohttp.ClientSession, session_id: str, user_id: str) -> int:
+        """Creates a stream.online subscription for user_id. Returns the HTTP status."""
         payload = {
             'type': 'stream.online',
             'version': '1',
@@ -225,6 +268,7 @@ class TwitchCog(commands.Cog):
                 body = await resp.json()
                 print(f'[EVENTSUB] Failed to subscribe to {user_id}: {resp.status} {body}')
                 log.error('Failed to subscribe to %s: %d %s', user_id, resp.status, body)
+            return resp.status
 
     async def _cancel_subscription(self, twitch_user_id: str) -> None:
         async with aiohttp.ClientSession(headers=await twitch_auth.get_headers(self.db)) as session:
