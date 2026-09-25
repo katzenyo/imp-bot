@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 DB_PATH = "impbot.db"
 EVENTSUB_WS_URL = "wss://eventsub.wss.twitch.tv/ws"
-NOTIFY_COOLDOWN = 7200  # 2 hours — prevents double-notifying for the same stream session
+NOTIFY_COOLDOWN = 7200  # 2 hours — dedup window for rows notified before last_stream_id was recorded
 KEEPALIVE_GRACE = 10  # seconds of silence tolerated beyond Twitch's keepalive timeout before reconnecting
 SUBSCRIBE_RETRY_DELAYS = (30, 60, 120, 300, 600)  # seconds between retries of subscriptions rejected with 429
 
@@ -26,6 +26,8 @@ class TwitchCog(commands.Cog):
         self._eventsub_task: Optional[asyncio.Task] = None
         self._retry_task: Optional[asyncio.Task] = None
         self._session_id: Optional[str] = None
+        # Serializes the check-then-send in EventSub and polling so both can't announce the same stream
+        self._notify_lock = asyncio.Lock()
 
     stream_group = app_commands.Group(name='stream', description='Stream notification commands')
 
@@ -65,14 +67,16 @@ class TwitchCog(commands.Cog):
                 twitch_login TEXT NOT NULL,
                 guild_id INTEGER NOT NULL,
                 last_notified_at INTEGER,
+                last_stream_id TEXT,
                 PRIMARY KEY (twitch_user_id, guild_id)
             )
         ''')
-        # Migration for existing databases that predate last_notified_at
-        try:
-            await self.db.execute('ALTER TABLE watched_streams ADD COLUMN last_notified_at INTEGER')
-        except aiosqlite.OperationalError:
-            pass
+        # Migrations for existing databases that predate last_notified_at / last_stream_id
+        for column in ('last_notified_at INTEGER', 'last_stream_id TEXT'):
+            try:
+                await self.db.execute(f'ALTER TABLE watched_streams ADD COLUMN {column}')
+            except aiosqlite.OperationalError:
+                pass
         await self.db.commit()
 
     # -------------------------------------------------------------------------
@@ -108,10 +112,29 @@ class TwitchCog(commands.Cog):
             rows = await cursor.fetchall()
         return [row['guild_id'] for row in rows]
 
-    async def _update_last_notified(self, twitch_user_id: str, guild_id: int) -> None:
+    async def _get_guilds_to_notify(self, twitch_user_id: str, stream_id: str) -> list[int]:
+        """Returns the guilds watching twitch_user_id that haven't been notified about this stream yet."""
+        async with self.db.execute(
+            'SELECT guild_id, last_notified_at, last_stream_id FROM watched_streams WHERE twitch_user_id = ?',
+            (twitch_user_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        now = int(time.time())
+        guild_ids = []
+        for row in rows:
+            if row['last_stream_id'] == stream_id:
+                continue
+            # Rows notified before stream IDs were recorded fall back to the time-based cooldown
+            if row['last_stream_id'] is None and row['last_notified_at'] and now - row['last_notified_at'] < NOTIFY_COOLDOWN:
+                continue
+            guild_ids.append(row['guild_id'])
+        return guild_ids
+
+    async def _update_last_notified(self, twitch_user_id: str, guild_id: int, stream_id: str) -> None:
         await self.db.execute(
-            'UPDATE watched_streams SET last_notified_at = ? WHERE twitch_user_id = ? AND guild_id = ?',
-            (int(time.time()), twitch_user_id, guild_id)
+            'UPDATE watched_streams SET last_notified_at = ?, last_stream_id = ? WHERE twitch_user_id = ? AND guild_id = ?',
+            (int(time.time()), stream_id, twitch_user_id, guild_id)
         )
         await self.db.commit()
 
@@ -268,7 +291,6 @@ class TwitchCog(commands.Cog):
                 body = await resp.json()
                 print(f'[EVENTSUB] Failed to subscribe to {user_id}: {resp.status} {body}')
                 log.error('Failed to subscribe to %s: %d %s', user_id, resp.status, body)
-            return resp.status
 
     async def _cancel_subscription(self, twitch_user_id: str) -> None:
         async with aiohttp.ClientSession(headers=await twitch_auth.get_headers(self.db)) as session:
@@ -324,19 +346,20 @@ class TwitchCog(commands.Cog):
 
         embed, view = self._build_notification(login, stream, avatar_url)
 
-        for guild_id in guild_ids:
-            channel = await self._get_stream_channel(guild_id)
-            if not channel:
-                log.warning('[EVENTSUB] No notification channel for guild %d, skipping', guild_id)
-                continue
-            try:
-                await channel.send(content='@here', embed=embed, view=view, allowed_mentions=discord.AllowedMentions(everyone=True))
-                await self._update_last_notified(user_id, guild_id)
-                print(f'[EVENTSUB] Sent notification for {login} in guild {guild_id}')
-                log.info('Sent notification for %s in guild %d', login, guild_id)
-            except discord.HTTPException as e:
-                print(f'[EVENTSUB] Failed to send notification in guild {guild_id}: {e}')
-                log.error('Failed to send notification in guild %d: %s', guild_id, e)
+        async with self._notify_lock:
+            for guild_id in await self._get_guilds_to_notify(user_id, stream['id']):
+                channel = await self._get_stream_channel(guild_id)
+                if not channel:
+                    log.warning('[EVENTSUB] No notification channel for guild %d, skipping', guild_id)
+                    continue
+                try:
+                    await channel.send(content='@here', embed=embed, view=view, allowed_mentions=discord.AllowedMentions(everyone=True))
+                    await self._update_last_notified(user_id, guild_id, stream['id'])
+                    print(f'[EVENTSUB] Sent notification for {login} in guild {guild_id}')
+                    log.info('Sent notification for %s in guild %d', login, guild_id)
+                except discord.HTTPException as e:
+                    print(f'[EVENTSUB] Failed to send notification in guild {guild_id}: {e}')
+                    log.error('Failed to send notification in guild %d: %s', guild_id, e)
 
     # -------------------------------------------------------------------------
     # Polling fallback
@@ -371,22 +394,11 @@ class TwitchCog(commands.Cog):
                 for stream in data.get('data', []):
                     live[stream['user_id']] = stream
 
-            now = int(time.time())
-
             for user_id, stream in live.items():
                 login = stream['user_login']
 
-                async with self.db.execute(
-                    'SELECT guild_id, last_notified_at FROM watched_streams WHERE twitch_user_id = ?',
-                    (user_id,)
-                ) as cursor:
-                    guild_rows = await cursor.fetchall()
-
-                guilds_to_notify = [
-                    row for row in guild_rows
-                    if row['last_notified_at'] is None or now - row['last_notified_at'] >= NOTIFY_COOLDOWN
-                ]
-                if not guilds_to_notify:
+                # Cheap pre-check so already-announced streams skip the /users lookup; rechecked under the lock
+                if not await self._get_guilds_to_notify(user_id, stream['id']):
                     continue
 
                 async with session.get(f'https://api.twitch.tv/helix/users?login={login}') as resp:
@@ -395,20 +407,20 @@ class TwitchCog(commands.Cog):
 
                 embed, view = self._build_notification(login, stream, avatar_url)
 
-                for row in guilds_to_notify:
-                    guild_id = row['guild_id']
-                    channel = await self._get_stream_channel(guild_id)
-                    if not channel:
-                        continue
-                    try:
-                        await channel.send(
-                            content='@here', embed=embed, view=view,
-                            allowed_mentions=discord.AllowedMentions(everyone=True)
-                        )
-                        await self._update_last_notified(user_id, guild_id)
-                        log.info('[POLL] Sent notification for %s in guild %d', login, guild_id)
-                    except discord.HTTPException as e:
-                        log.error('[POLL] Failed to send notification for %s in guild %d: %s', login, guild_id, e)
+                async with self._notify_lock:
+                    for guild_id in await self._get_guilds_to_notify(user_id, stream['id']):
+                        channel = await self._get_stream_channel(guild_id)
+                        if not channel:
+                            continue
+                        try:
+                            await channel.send(
+                                content='@here', embed=embed, view=view,
+                                allowed_mentions=discord.AllowedMentions(everyone=True)
+                            )
+                            await self._update_last_notified(user_id, guild_id, stream['id'])
+                            log.info('[POLL] Sent notification for %s in guild %d', login, guild_id)
+                        except discord.HTTPException as e:
+                            log.error('[POLL] Failed to send notification for %s in guild %d: %s', login, guild_id, e)
 
     # -------------------------------------------------------------------------
     # Admin commands
